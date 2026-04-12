@@ -248,14 +248,14 @@ Radio buttons are **deselectable** (clicking a selected radio unchecks it). This
 When setting up a new project, install and configure [code-review-graph](https://code-review-graph.com/) — a Python tool that builds a structural knowledge graph of the codebase so AI assistants read only what matters (8× token reduction):
 
 ```bash
-pipx install code-review-graph   # or: pip install code-review-graph
-code-review-graph install        # auto-detects Claude Code, Cursor, etc. and writes MCP config
-code-review-graph build          # parse the codebase (first run ~10s for 500-file project)
+uv add code-review-graph                          # add to project dependencies
+uv run code-review-graph install --platform claude-code  # writes MCP config, hooks, and CLAUDE.md instructions
+uv run code-review-graph build                    # parse the codebase (first run ~10s for 500-file project)
 ```
 
-This only needs to be run once per project. Commit the resulting `.claude/settings.json` (shared config) but add `.claude/settings.local.json` to `.gitignore`.
+This only needs to be run once per project. Commit the resulting `.claude/settings.json` and `.mcp.json` (shared config) but add `.claude/settings.local.json` to `.gitignore`.
 
-After installing, restart Claude Code and ask it to "Build the code review graph for this project". The graph then updates automatically on every file edit and git commit.
+The graph auto-updates on every git commit via the installed pre-commit hook. Restart Claude Code after setup to pick up the new MCP config.
 
 ---
 
