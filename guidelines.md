@@ -231,6 +231,46 @@ Radio buttons are **deselectable** (clicking a selected radio unchecks it). This
 - **Production:** PostgreSQL, Brevo SMTP (`smtp-relay.brevo.com:587`) via `django-anymail`
 - **Error tracking:** Rollbar in production (`django-rollbar`, `ROLLBAR_ACCESS_TOKEN` env var). Not in dev.
 
+### Local SQLite override
+
+cookiecutter-django defaults `DATABASE_URL` to Postgres in `base.py`. For local dev, override in `local.py`:
+
+```python
+from .base import BASE_DIR
+
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": str(BASE_DIR / "db.sqlite3"),
+        "ATOMIC_REQUESTS": True,
+    },
+}
+```
+
+### Required fix: cookiecutter-django sites migration on SQLite
+
+cookiecutter-django officially supports **Postgres only**, so its generated
+`<project>/contrib/sites/migrations/0003_set_site_domain_and_name.py` runs
+Postgres-specific sequence SQL (`SELECT last_value from django_site_id_seq` /
+`alter sequence …`). On SQLite this fails with
+`OperationalError: no such table: django_site_id_seq`. Upstream has declined to
+fix this ([issue #3587](https://github.com/cookiecutter/cookiecutter-django/issues/3587),
+wontfix), so **every new project must patch this migration** — guard the
+sequence block by backend vendor:
+
+```python
+# in _update_or_create_site_with_sequence(...)
+if created and connection.vendor == "postgresql":
+    # SQLite (local dev) has no sequences, so this is skipped.
+    max_id = site_model.objects.order_by("-id").first().id
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT last_value from django_site_id_seq")
+        ...
+```
+
+The guard is a no-op on Postgres (preserves the sequence sync) and lets SQLite
+migrate cleanly.
+
 ---
 
 ## 11. Background Tasks
