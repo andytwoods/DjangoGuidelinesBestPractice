@@ -331,7 +331,49 @@ migrate cleanly.
 
 ---
 
-## 12. Background Tasks
+## 12. Don't double-report errors – disable Django's mail_admins emails when you use an error tracker (Rollbar/Sentry)
+
+If you run an error tracker (Rollbar, Sentry, etc. – this project uses Rollbar in production, see section 11), Django's built-in admin error emails are redundant noise. Turning them off is less obvious than it looks because of a logging gotcha.
+
+**The gotcha.** Django's default logging attaches a `mail_admins` handler (`django.utils.log.AdminEmailHandler`) to the built-in `django` logger, and emails `settings.ADMINS` on ERROR-level `django.request` / `django.security.*` records (gated by the `require_debug_false` filter, so it only fires when `DEBUG=False`). Defining your own `LOGGING` dict does **not** remove this if you set `disable_existing_loggers: False` (the common default): the built-in `django` logger survives with `mail_admins` still attached. Worse, if your custom child loggers (`django.request`, etc.) use `propagate: True`, their records bubble up to that surviving parent and trigger the email anyway — even though `mail_admins` appears nowhere in your config.
+
+**The fix.** Redefine the parent `django` logger explicitly with only the handlers you want, and stop children propagating into stray handlers:
+
+```python
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"console": {"class": "logging.StreamHandler", ...}},
+    "root": {"handlers": ["console"], "level": "INFO"},
+    "loggers": {
+        # Overrides Django's default `django` logger, dropping mail_admins.
+        "django": {"handlers": ["console"], "level": "INFO", "propagate": False},
+        "django.request": {"handlers": ["console"], "level": "ERROR", "propagate": False},
+        "django.security.DisallowedHost": {"handlers": ["console"], "level": "ERROR", "propagate": False},
+    },
+}
+```
+
+**Keep `ADMINS` set.** Don't blank `ADMINS` to silence emails — it's also used by deliberate `django.core.mail.mail_admins()` / `mail_managers()` calls (e.g. signup notifications) and is a common fallback for a contact address. Removing the `mail_admins` logging handler is the correct, targeted fix; the `mail_admins()` function sends directly and is unaffected.
+
+**Verify with a test**, since the behavior is config-driven and easy to get wrong:
+
+```python
+def test_request_errors_do_not_email_admins(settings):
+    from django.core import mail; import logging
+    mail.outbox.clear()
+    logging.getLogger("django.request").error("boom")
+    logging.getLogger("django.security.DisallowedHost").error("bad host")
+    assert mail.outbox == []
+```
+
+(Run with `DEBUG=False` and the locmem email backend so the `require_debug_false` filter is active.)
+
+**Anti-pattern:** assuming "I never added `mail_admins`, so no error emails are sent." With `disable_existing_loggers: False`, the default handler persists invisibly.
+
+---
+
+## 13. Background Tasks
 
 - Use **Huey** with a Redis backend. **Never Celery.**
 - `tasks.py` contains only task-decorated functions — no business logic
@@ -341,7 +383,7 @@ migrate cleanly.
 
 ---
 
-## 13. New Project Setup
+## 14. New Project Setup
 
 When setting up a new project, install and configure [code-review-graph](https://code-review-graph.com/) — a Python tool that builds a structural knowledge graph of the codebase so AI assistants read only what matters (8× token reduction):
 
@@ -357,14 +399,14 @@ The graph auto-updates on every git commit via the installed pre-commit hook. Re
 
 ---
 
-## 14. Phased Work (TASKS.md / ACTIONS.md)
+## 15. Phased Work (TASKS.md / ACTIONS.md)
 
 When implementing work broken into phases in a `TASKS.md`, `ACTIONS.md`, or similar file:
 - After completing each phase, commit all changes to git before starting the next phase
 - Write a commit message that gives a clear synopsis of what the phase accomplished — not just "phase 2 done" but a meaningful summary of the actual changes (e.g. "Add WebAuthn passkey login with conditional UI and abort-controller fix")
 - Use the standard commit format: short imperative subject line, then a blank line and bullet points for detail if the phase was substantial
 
-## 15. Testing
+## 16. Testing
 
 - Write unit tests for all new features; cover success and failure paths
 - Never hard-code URL paths in assertions — use `django.urls.reverse()` with named routes
