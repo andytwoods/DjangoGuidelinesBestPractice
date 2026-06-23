@@ -103,7 +103,65 @@ MFA_WEBAUTHN_ALLOW_INSECURE_ORIGIN = True  # allows passkey testing over HTTP
 
 ---
 
-## 5. Models
+## 5. Guard email-sending endpoints against form-abuse / email bombing
+
+**The risk.** Any unauthenticated endpoint that triggers an outbound email on submission – account signup with email verification, password reset, "resend confirmation," waitlist/contact forms – can be abused as a spam relay. An attacker scripts the form with arbitrary recipient addresses; your server emails strangers on their behalf, burning SMTP credits and damaging sender reputation (blocklisting). The victims are third parties, so it's easy to miss until the bill or a deliverability warning arrives.
+
+> Real incident: a public allauth signup form with no CAPTCHA and an over-generous default rate limit was scripted by a bot with random third-party addresses, firing ~1,900 unsolicited "Confirm your email" messages, exhausting the Brevo SMTP credits and threatening sender reputation.
+
+Apply **all** of these layered defenses – no single one is sufficient.
+
+### 5.1 CAPTCHA on the form itself
+
+The only thing that reliably stops distributed/slow bots (per-IP rate limits don't). Prefer a self-hosted CAPTCHA like **django-simple-captcha** when you can't or don't want to depend on a third party: it generates the challenge image locally, needs no API keys and no external calls, and serves the image from `'self'` so it works under a strict CSP (`img-src 'self'`).
+
+**Wire it into the form – don't just install it:**
+
+```python
+# forms.py
+from captcha.fields import CaptchaField
+from allauth.account.forms import SignupForm
+
+class UserSignupForm(SignupForm):
+    captcha = CaptchaField()
+```
+
+Ensure the app is fully wired: `"captcha"` in `INSTALLED_APPS`, `path("captcha/", include("captcha.urls"))` in the URLconf, migrations applied, and Pillow installed. In tests, set `CAPTCHA_TEST_MODE = True` so the literal answer `"PASSED"` validates (submit `captcha_0=key`, `captcha_1="PASSED"`).
+
+If you must use reCAPTCHA/hCaptcha/Turnstile instead, the rule is the same: attach the field to the form **and** add the provider's domains to your CSP `script-src`/`frame-src`. Installing the package alone does nothing.
+
+### 5.2 Tighten framework rate limits – never trust defaults
+
+With django-allauth, override `ACCOUNT_RATE_LIMITS`; the default `signup: "20/m/ip"` allows 20 confirmation emails/minute/IP. Use something like:
+
+```python
+ACCOUNT_RATE_LIMITS = {
+    "signup": "5/h/ip",
+    "login_failed": "10/m/ip,5/300s/key",
+    "reset_password": "5/h/ip,3/h/key",
+    "confirm_email": "1/3m/key",
+}
+```
+
+For non-allauth views (custom contact/waitlist forms), use **django-ratelimit**: `@ratelimit(key="ip", rate="5/h", method="POST", block=False)` and render a 429 when `request.limited`.
+
+### 5.3 Honeypot field
+
+Add a hidden input real users never fill (zero user friction) to catch naive bots; reject the submission if it's non-empty.
+
+### 5.4 Operational hygiene
+
+- Keep `ACCOUNT_EMAIL_VERIFICATION = "mandatory"` so unverified accounts can't act.
+- Monitor your ESP dashboard for sudden send spikes.
+- After an incident, check sender reputation/blocklists.
+
+**Anti-pattern to call out:** installing an anti-bot package (django-recaptcha, django-simple-captcha) and reading its keys in settings, but **never adding the field to the form** – this gives a false sense of security while the endpoint stays wide open.
+
+**Verify with a test, don't just eyeball it.** Assert that (a) the form/page renders the CAPTCHA, (b) a POST without a valid CAPTCHA is rejected and sends zero emails (`len(mail.outbox) == 0`), and (c) a POST with a valid CAPTCHA succeeds and sends exactly one.
+
+---
+
+## 6. Models
 
 - Always add `__str__`
 - Use `related_name` where helpful
@@ -127,7 +185,7 @@ In **templates**, Django auto-calls callables — write `queryset.exists` (no pa
 
 ---
 
-## 6. Views & URLs
+## 7. Views & URLs
 
 - Validate and sanitise all input
 - Prefer `get_object_or_404`
@@ -136,7 +194,7 @@ In **templates**, Django auto-calls callables — write `queryset.exists` (no pa
 
 ---
 
-## 7. Templates
+## 8. Templates
 
 - Templates live in the app that owns them: `<project_name>/<appname>/templates/<appname>/`
 - Do **not** use a global `<project_name>/templates/` directory for app templates
@@ -152,14 +210,14 @@ In **templates**, Django auto-calls callables — write `queryset.exists` (no pa
 
 ---
 
-## 8. Forms
+## 9. Forms
 
 - Prefer ModelForms
 - Use **crispy-forms** with the **Bulma** template pack (`crispy-bulma`). `CRISPY_TEMPLATE_PACK = "bulma"` in `base.py`.
 
 ---
 
-## 9. Frontend
+## 10. Frontend
 
 ### CSS — Bulma
 - **Bulma** is the only CSS framework. No Bootstrap, Tailwind, or others.
@@ -223,7 +281,7 @@ Radio buttons are **deselectable** (clicking a selected radio unchecks it). This
 
 ---
 
-## 10. Settings
+## 11. Settings
 
 - Use env vars; never commit secrets
 - Settings split: `base.py` (all envs) / `local.py` (dev) / `production.py` (prod) — do not collapse them
@@ -273,7 +331,7 @@ migrate cleanly.
 
 ---
 
-## 11. Background Tasks
+## 12. Background Tasks
 
 - Use **Huey** with a Redis backend. **Never Celery.**
 - `tasks.py` contains only task-decorated functions — no business logic
@@ -283,7 +341,7 @@ migrate cleanly.
 
 ---
 
-## 12. New Project Setup
+## 13. New Project Setup
 
 When setting up a new project, install and configure [code-review-graph](https://code-review-graph.com/) — a Python tool that builds a structural knowledge graph of the codebase so AI assistants read only what matters (8× token reduction):
 
@@ -299,14 +357,14 @@ The graph auto-updates on every git commit via the installed pre-commit hook. Re
 
 ---
 
-## 13. Phased Work (TASKS.md / ACTIONS.md)
+## 14. Phased Work (TASKS.md / ACTIONS.md)
 
 When implementing work broken into phases in a `TASKS.md`, `ACTIONS.md`, or similar file:
 - After completing each phase, commit all changes to git before starting the next phase
 - Write a commit message that gives a clear synopsis of what the phase accomplished — not just "phase 2 done" but a meaningful summary of the actual changes (e.g. "Add WebAuthn passkey login with conditional UI and abort-controller fix")
 - Use the standard commit format: short imperative subject line, then a blank line and bullet points for detail if the phase was substantial
 
-## 13. Testing
+## 15. Testing
 
 - Write unit tests for all new features; cover success and failure paths
 - Never hard-code URL paths in assertions — use `django.urls.reverse()` with named routes
