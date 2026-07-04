@@ -329,6 +329,32 @@ if created and connection.vendor == "postgresql":
 The guard is a no-op on Postgres (preserves the sequence sync) and lets SQLite
 migrate cleanly.
 
+### Local development tooling (dev-only)
+- Use **django-debug-toolbar** in `local.py` only — never in production.
+- **Require [django-loginout-panel](https://github.com/andytwoods/django-loginout-panel)** — a debug-toolbar panel giving one-click login/logout while developing. Install as a dev dependency and wire it into `local.py` only:
+
+```bash
+uv add --dev django-loginout-panel
+```
+
+```python
+# config/settings/local.py — inside the existing debug-toolbar block
+INSTALLED_APPS += ["loginout_panel"]
+
+# Defining DEBUG_TOOLBAR_PANELS is required for the panel to appear;
+# list loginout_panel's panel first, then the standard toolbar panels.
+DEBUG_TOOLBAR_PANELS = [
+    "loginout_panel.panel.LoginOutPanel",  # NB: the class lives in .panel, not the package root
+    # ... standard debug_toolbar.panels.* entries ...
+]
+
+# The account the panel logs in as. Keep it overridable via env.
+LOGINOUT_USERNAME = env("LOGINOUT_USERNAME", default="dev@example.com")
+```
+
+- Optional hardening settings: `LOGINOUT_SERVER` (restrict endpoints to an IP) and `LOGINOUT_TRUST_XFF` (only when behind a trusted proxy).
+- No models/migrations. Because login is **email-only** (§3), set `LOGINOUT_USERNAME` to a real local user's email.
+
 ---
 
 ## 12. Don't double-report errors – disable Django's mail_admins emails when you use an error tracker (Rollbar/Sentry)
