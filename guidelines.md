@@ -94,7 +94,15 @@ MFA_WEBAUTHN_ALLOW_INSECURE_ORIGIN = True  # allows passkey testing over HTTP
 - The login template (`account/login.html`) overrides allauth's default and must:
   - Show a prominent "Sign in with passkey (fingerprint / device PIN)" button **first**
   - Hide the email/password form in a native `<details>`/`<summary>` collapsed by default
-- Use **WebAuthn Conditional UI** (`mediation: "conditional"`) so the browser surfaces stored passkeys in the email-field autofill without a button click:
+- **Don't hand-write these pages.** Adding `"allauth_bulma.pages"` to `INSTALLED_APPS` (see §8) ships `account/login.html` and `account/signup.html` already in this shape, with the conditional-UI script below already wired. Supply project copy by extending them and filling a block, rather than copying the template:
+
+```django
+{# <project_name>/templates/account/login.html #}
+{% extends "allauth_bulma/login.html" %}
+{% block login_intro %}<p class="subtitle is-6">Your strapline here.</p>{% endblock %}
+```
+
+- Use **WebAuthn Conditional UI** (`mediation: "conditional"`) so the browser surfaces stored passkeys in the email-field autofill without a button click. The package ships this as `allauth_bulma/passkey_conditional_ui.html`; the rules below are what it implements, and what to follow if you ever write it by hand:
   - On page load, check `PublicKeyCredential.isConditionalMediationAvailable()`
   - If available, set `autocomplete="username webauthn"` on the email input and start a background conditional credential request against allauth's `mfa_login_webauthn` endpoint
   - Use an `AbortController`; abort it in a **capture-phase** listener on the passkey button (allauth's handler runs in the bubble phase — this prevents "A request is already pending")
@@ -192,6 +200,36 @@ In **templates**, Django auto-calls callables — write `queryset.exists` (no pa
 - Paginate lists
 - URL names should be descriptive and end with `/`
 
+### Always have a logged-in home page
+
+**Every project has a signed-in landing page, and signing in goes there.** Never drop a user on their profile/settings page, or back on the marketing site, after login — those are destinations, not starting points.
+
+The page must:
+- **Show the tools available to them** — the actions this user can actually take, as visible entry points (primary action prominent), not just navbar links they have to hunt for
+- **Summarise key information where appropriate** — headline figures, recent items, anything needing attention. Skip this rather than pad it with numbers no one acts on
+- **Reflect permissions** — surface only what this user can do; an empty state for a new user should point at the first useful action rather than showing zeros
+
+Implement it as the site root, branching on authentication, so `/` is correct for everyone and there's no redirect hop:
+
+```python
+# config/views.py
+def home(request):
+    """Marketing landing when logged out; a tooled dashboard when logged in."""
+    if not request.user.is_authenticated:
+        return render(request, "pages/home.html")
+    ...
+    return render(request, "pages/dashboard.html", {"stats": stats, ...})
+```
+
+Then point allauth at it — cookiecutter-django defaults `LOGIN_REDIRECT_URL` to a `users:redirect` view that lands on the user's own detail page, which is **not** what we want:
+
+```python
+# config/settings/base.py
+LOGIN_REDIRECT_URL = "home"
+```
+
+Keep the summary queries efficient (§6) — this page loads on every sign-in, so use `.count()`/`.aggregate()` and `annotate()` rather than pulling rows to count in Python.
+
 ---
 
 ## 8. Templates
@@ -203,10 +241,46 @@ In **templates**, Django auto-calls callables — write `queryset.exists` (no pa
 - Use template inheritance; keep logic minimal; always `{% load static %}` and enable CSRF
 
 ### allauth template overrides
-- Allauth UI elements are overridden with Bulma styling in `<project_name>/templates/allauth/elements/`
-- `button.html` maps allauth tags to Bulma classes: `danger`→`is-danger`, `success`→`is-success`, `warning`→`is-warning`, `secondary`→`is-light`, `outline`→`is-outlined`, default→`is-primary`
-- The entrance layout (`allauth/layouts/entrance.html`) extends `base.html`, centres content in a 5-tablet/4-desktop column, and injects `cap-mode` for Capacitor
-- When overriding allauth templates, place them in `<project_name>/templates/account/` or `<project_name>/templates/mfa/` — allauth picks them up automatically
+
+**Require [django-allauth-bulma](https://github.com/andytwoods/django-allauth-bulma)** — do not hand-copy Bulma allauth templates into a new project. allauth renders every page through a small set of "elements" (`button`, `field`, `form`, `panel`, …), so overriding those elements once styles *all* allauth pages: login, signup, email management, password change, TOTP setup, recovery codes, passkey management and social connections.
+
+```bash
+uv add git+https://github.com/andytwoods/django-allauth-bulma.git --tag v0.1.0
+```
+
+```python
+# config/settings/base.py — ordering is load-bearing
+THIRD_PARTY_APPS = [
+    ...
+    # The app-directories template loader is first-match-wins, so these must
+    # precede `allauth` or its own templates win.
+    "allauth_bulma",
+    "allauth_bulma.pages",  # optional: passkey-first login/signup (see §4)
+    "allauth",
+    "allauth.account",
+    "allauth.mfa",
+    ...
+]
+```
+
+If the project is built from a Dockerfile, the build stage needs `git` installed to resolve the git dependency (`python:*-slim` images don't ship it).
+
+**Bridging into your `base.html`.** Out of the box the package renders a standalone shell. To fold allauth's pages into the project's own chrome, shadow `allauth_bulma/base.html` in `<project_name>/templates/`:
+
+```django
+{% extends "base.html" %}
+
+{% block title %}{% block head_title %}{% endblock head_title %}{% endblock title %}
+{% block main %}{% block allauth_bulma_main %}{% endblock allauth_bulma_main %}{% endblock main %}
+{% block inline_javascript %}{% block extra_body %}{% endblock extra_body %}{% endblock inline_javascript %}
+```
+
+- `{% extends %}` must be the **first** tag — put any explanatory comment after it.
+- Hook `allauth_bulma_main`, **never** `content`. The package's layouts declare `{% block content %}` *inside* that wrapper for allauth's own pages to fill; naming both `content` makes Django resolve them to the same block and the centred-column wrapper is silently dropped. This requires `base.html` to have a block that *wraps* its content block (`main`).
+
+**What the package provides:** Bulma versions of `alert`, `badge`, `button`, `button_group`, `details`, `field`, `fields`, `form`, `h1`, `h2`, `hr`, `p`, `panel`, `provider`, `provider_list`, `table`; entrance (5-tablet/4-desktop) and manage (8-tablet/7-desktop) layouts; and `account/base_manage_password.html`. `button.html` maps allauth tags to Bulma classes: `danger`→`is-danger`, `success`→`is-success`, `warning`→`is-warning`, `secondary`→`is-light`, `outline`→`is-outlined`, `prominent`→`is-fullwidth`, default→`is-primary`.
+
+**Project-specific overrides** still go in `<project_name>/templates/account/` or `<project_name>/templates/mfa/` — allauth picks them up automatically, and `TEMPLATES["DIRS"]` beats app directories, so they win over the package. Prefer extending the package's template and filling a block over copying it wholesale.
 
 ---
 
@@ -214,6 +288,7 @@ In **templates**, Django auto-calls callables — write `queryset.exists` (no pa
 
 - Prefer ModelForms
 - Use **crispy-forms** with the **Bulma** template pack (`crispy-bulma`). `CRISPY_TEMPLATE_PACK = "bulma"` in `base.py`.
+- **Exception: allauth forms.** allauth renders whole forms through its `fields` element, which django-allauth-bulma (§8) implements with its own `{% bulma_field %}` tag rather than crispy — so the package carries no crispy dependency. Leave that element alone; crispy still applies to every non-allauth form.
 
 ---
 
